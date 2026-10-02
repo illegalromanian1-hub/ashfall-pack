@@ -17,7 +17,8 @@ import shutil
 import zipfile
 from PIL import Image, ImageDraw
 
-OUT = "/home/daniel/Documents/ashfall/pack"
+ROOT = os.path.dirname(os.path.abspath(__file__))
+OUT = f"{ROOT}/pack"
 LEGACY = "/tmp/opencode/packx/assets/minecraft/textures/ashfall_flag"
 
 RANKS = [
@@ -150,52 +151,47 @@ def write_json(path, data):
 
 # -- Warden Spear ---------------------------------------------------------
 # Vanilla has wooden/stone/copper/iron/golden/diamond/netherite spears and nothing
-# black, so the spear ships as an iron spear whose model is swapped for this texture
-# through the minecraft:item_model component. A client without the pack, or Bedrock,
-# just sees the plain iron spear, which is why the base material is a real spear.
-SPEAR_OUTLINE = (0x05, 0x05, 0x0A)
-SPEAR_BODY = (0x16, 0x16, 0x1E)
-SPEAR_EDGE = (0x44, 0x44, 0x55)
+# black, so the spear ships as an iron spear whose model is swapped through the
+# minecraft:item_model component. A client without the pack, or Bedrock, just sees the
+# plain iron spear, which is why the base material is a real spear.
+#
+# The sprite itself is the vanilla iron spear (vanilla/iron_spear*.png, pulled from the
+# official client jar) with its palette crushed down to near-black. Recolouring the real
+# sprite keeps the silhouette, the in-hand pose and the swap animation identical to a
+# genuine spear instead of hand-drawing something that only roughly reads as one.
+VANILLA = f"{ROOT}/vanilla"
 
 SPEAR_MODEL_ID = "minecraft:ashfall/warden_spear"
 
 
-def spear_sprite():
-    """16x16 black spear along the anti-diagonal, point at the top right."""
-    img = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
-    px = img.load()
-    for y in range(16):
-        for x in range(16):
-            a = x + y                      # 0..30, distance along the spear
-            v = abs(x - y) / 2.0           # distance out from its axis
-            solid = edge = False
-            if 6 <= a <= 20:               # shaft
-                solid = v <= 0.8
-                edge = 0.8 < v <= 1.8
-            elif 20 < a <= 26:             # head: widens, then tapers to the point
-                half = 2.6 - (a - 20) * 0.55
-                solid = v <= half
-                edge = half < v <= half + 1.1
-            if solid:
-                px[x, y] = SPEAR_BODY + (255,)
-            elif edge:
-                px[x, y] = SPEAR_OUTLINE + (255,)
-    # A pure black sprite disappears into a dark inventory, so the top edge of the
-    # shaft catches a little light the way a real one would.
-    for y in range(16):
-        last = None
-        for x in range(15, -1, -1):
-            if px[x, y][3] and px[x, y][:3] == SPEAR_BODY:
-                last = x
-                break
-        if last is not None:
-            px[last, y] = SPEAR_EDGE + (255,)
-    return img
+def darken_sprite(img):
+    """Crush a vanilla spear sprite towards black, keeping enough contrast to read.
+
+    Iron pixels go to dark gunmetal with a faint cool tint, the wooden shaft to a dark
+    brown-black. Alpha is untouched, so the sprite keeps its exact outline.
+    """
+    out = img.convert("RGBA")
+    px = out.load()
+    for y in range(out.height):
+        for x in range(out.width):
+            r, g, b, a = px[x, y]
+            if not a:
+                continue
+            lum = 0.299 * r + 0.587 * g + 0.114 * b
+            if r > b + 12:                                    # wooden shaft
+                px[x, y] = (int(4 + lum * 0.20), int(3 + lum * 0.14),
+                            int(2 + lum * 0.10), a)
+            else:                                            # iron head / fittings
+                px[x, y] = (int(6 + lum * 0.26), int(6 + lum * 0.27),
+                            int(9 + lum * 0.32), a)
+    return out
 
 
-def build_spear(path):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    spear_sprite().save(path)
+def build_spear(out_dir):
+    """Writes both spear sprites: the flat 16x16 and the 32x32 held-in-hand one."""
+    for name in ("iron_spear", "iron_spear_in_hand"):
+        src = f"{VANILLA}/{name}.png"
+        darken_sprite(Image.open(src)).save(f"{out_dir}/{name}.png")
 
 
 def main():
@@ -205,20 +201,41 @@ def main():
 
     build_rank_atlas(f"{textures}/rank.png")
     build_title_atlas(f"{textures}/title.png")
-    build_spear(f"{OUT}/assets/minecraft/textures/item/ashfall/warden_spear.png")
+    spear_tex = f"{OUT}/assets/minecraft/textures/item/ashfall"
+    os.makedirs(spear_tex, exist_ok=True)
+    build_spear(spear_tex)
+    os.rename(f"{spear_tex}/iron_spear.png", f"{spear_tex}/warden_spear.png")
+    os.rename(f"{spear_tex}/iron_spear_in_hand.png", f"{spear_tex}/warden_spear_in_hand.png")
 
     # -- Warden Spear model -----------------------------------------------
-    # Both files ship on purpose. 26.x reads the minecraft:item_model component as an
-    # item definition (assets/minecraft/items/<id>.json) which then points at the model,
-    # while older clients that only know custom model data look for the model file
-    # itself. Shipping the pair means the black spear resolves either way, and a client
-    # that finds neither still falls back to the item's own texture.
+    # Mirrors vanilla's own iron_spear wiring: an item definition that picks the flat
+    # sprite for gui/ground/fixed/on_shelf and the held sprite for everything else,
+    # plus the same swap animation scale. 26.x reads the minecraft:item_model component
+    # as an item definition (assets/minecraft/items/<id>.json) which then points at the
+    # model, while older clients that only know custom model data look for the model
+    # file itself. Shipping the pair means the black spear resolves either way, and a
+    # client that finds neither still falls back to the item's own texture.
     write_json(f"{OUT}/assets/minecraft/items/ashfall/warden_spear.json", {
-        "model": {"type": "minecraft:model", "model": "minecraft:item/ashfall/warden_spear"}
+        "model": {
+            "type": "minecraft:select",
+            "property": "minecraft:display_context",
+            "cases": [{
+                "when": ["gui", "ground", "fixed", "on_shelf"],
+                "model": {"type": "minecraft:model",
+                          "model": "minecraft:item/ashfall/warden_spear"},
+            }],
+            "fallback": {"type": "minecraft:model",
+                         "model": "minecraft:item/ashfall/warden_spear_in_hand"},
+        },
+        "swap_animation_scale": 1.95,
     })
     write_json(f"{OUT}/assets/minecraft/models/item/ashfall/warden_spear.json", {
         "parent": "minecraft:item/generated",
         "textures": {"layer0": "minecraft:item/ashfall/warden_spear"},
+    })
+    write_json(f"{OUT}/assets/minecraft/models/item/ashfall/warden_spear_in_hand.json", {
+        "parent": "minecraft:item/spear_in_hand",
+        "textures": {"layer0": "minecraft:item/ashfall/warden_spear_in_hand"},
     })
 
     # Old flag art is kept so stray flag / icon characters still resolve.
