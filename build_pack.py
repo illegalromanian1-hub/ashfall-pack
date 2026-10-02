@@ -272,24 +272,35 @@ def main():
 
     # Which clients accept the pack.
     #
-    # Two generations of client read this file:
-    #   * 1.21.x reads "supported_formats" and warns "Pack declares support for
-    #     format 15, but game versions supporting formats 17 to 64 require a
-    #     supported_formats field" when it is missing.
-    #   * 26.x reads "min_format"/"max_format" and errors with "Pack declares
-    #     support for version newer than 64, but is missing mandatory fields
-    #     min_format and max_format" when they are missing.
-    # A pack is only accepted when BOTH agree, so all four keys ship. Getting
-    # this wrong is invisible on the server and fatal on the client: a rejected
-    # pack leaves minecraft:ashfall/title undefined, every glyph in it falls
-    # back to a zero-width blank, and the ASHFALLSMP title renders as nothing at
-    # all instead of as an error.
+    # Verified against the real 26.3 client codec, not guessed. Every claim
+    # below was produced by parsing candidate files through
+    # PackFormat.packCodec(PackType.CLIENT_RESOURCES) out of the official
+    # 26.3 client jar and asking PackCompatibility.forVersion(range, 97.1):
+    #
+    #   * version.json for 26.3 reports resource_major 97 / resource_minor 1,
+    #     and data_major 121. 121 is the DATA pack format, not the resource one.
+    #   * PackFormat.lastPreMinorVersion(CLIENT_RESOURCES) is 64, so anything
+    #     from 65.0 up must carry both min_format and max_format; a bare
+    #     "pack_format" there is rejected with "declares support for version
+    #     newer than 64, but is missing mandatory fields min_format and
+    #     max_format".
+    #   * "pack_format" is also deprecated from 65.0 up, so the legacy scalar
+    #     and its "supported_formats" companion are simply not shipped.
+    #   * A legacy "pack_format": 15 parses but resolves to TOO_OLD against
+    #     97.1, which is how the old pack failed to show its title.
+    #   * min 88 / max 121 parses to the range 88.0..121.* and comes back
+    #     COMPATIBLE against 97.1. 88.0 is 1.21.9, the oldest client that can
+    #     read this pack's fonts and item models; the upper bound is generous
+    #     so future client updates do not turn the pack incompatible.
+    #
+    # Getting this wrong is invisible on the server and fatal on the client: a
+    # rejected pack leaves minecraft:ashfall/title undefined, every glyph in it
+    # falls back to a zero-width blank, and the ASHFALLSMP title renders as
+    # nothing at all instead of as an error.
     write_json(f"{OUT}/pack.mcmeta", {
         "pack": {
             "description": "AshFall 3D title",
-            "pack_format": 121,
-            "supported_formats": [15, 64],
-            "min_format": 15,
+            "min_format": 88,
             "max_format": 121,
         }
     })
